@@ -145,6 +145,11 @@
 
   footer{ text-align:center; color:var(--muted); font-size:12.5px; margin-top:30px; padding-top:18px; border-top:1px solid var(--line); }
   footer b{ color:var(--ink); }
+
+  .export-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:18px 0 6px}
+  .export-btn{background:var(--sage-deep);color:#fff;border:0;border-radius:999px;padding:12px 34px;font:700 16px Inter,sans-serif;cursor:pointer}
+  .export-btn:hover{filter:brightness(.92)} .export-btn:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+  .export-hint{color:var(--muted);font-size:14px}
 </style>
 </head>
 <body>
@@ -230,6 +235,11 @@
       <div class="empty" id="empty-state">No payers added yet — search above to get started.</div>
     </div>
     <div class="pool-note" id="pool-note" hidden></div>
+  </div>
+
+  <div class="export-row">
+    <button type="button" id="export-btn" class="export-btn">Export</button>
+    <span class="export-hint">Download your routing plan: what to do for each payer, what you will need, and what it saves.</span>
   </div>
 
   <footer>Built for <b>AC Medical Billing</b> · payer data from Availity's published batch network — free vs. paid-EDI status can change; re-check periodically. Mail cost assumes one combined monthly mailing per payer (PostGrid, HIPAA-compliant BAA available, color, single-sided — the cheapest HIPAA-compliant option we found), not one piece per claim.</footer>
@@ -481,6 +491,137 @@
   ['rate-current','rate-mail-base','rate-mail-page','mail-pages-per-claim','rate-edi','rate-edi-cap','rate-edi-overage'].forEach(id=>{
     $(id).addEventListener('input', ()=>{ saveState(); render(); });
   });
+
+  // ---- Export: a nicely laid-out routing plan (one HTML file, prints to PDF) with the data also embedded for the app ----
+  const WAITLIST_URL = 'https://beacons.ai/the.amanda.christy';
+
+  const ROUTE_INFO = {
+    free: { label: 'Send electronically (free)', short: 'Free · Availity', app: 'electronic', cls: 'free' },
+    pool: { label: 'Send electronically (Availity paid plan)', short: 'Availity paid plan', app: 'electronic', cls: 'pool' },
+    mail: { label: 'Mail on paper', short: 'Mail', app: 'mail', cls: 'mail' },
+    stay: { label: 'Keep as you do today', short: 'Stay as-is', app: 'stay', cls: 'stay' }
+  };
+
+  function stepsFor(res){
+    const id = escapeHtml(res.r.id);
+    const enroll = res.r.enrollRequired
+      ? '<li><b>Enroll with this payer first.</b> In Availity Essentials, complete this payer\'s one-time enrollment for electronic claims. Until you do, its claims are rejected.</li>' : '';
+    if (res.route === 'free') return `
+      <li>Register your organization in Availity Essentials (free) and note your <b>Customer ID</b>.</li>
+      ${enroll}
+      <li>Set up your Availity claims mailbox (Claims &amp; Payments, then FTP and EDI Connection Services). You will get a mailbox username and password.</li>
+      <li>Send your claims as a batch file to payer ID <b>${id}</b>.</li>
+      <li>About 20 minutes later, check the response reports to confirm the payer accepted each claim.</li>`;
+    if (res.route === 'pool') return `
+      <li>Availity charges for batch claims to this payer, but pooling it with your other paid payers on Availity's EDI plan costs less than your current per-claim fee at your volume.</li>
+      <li>Register in Availity Essentials, subscribe to the EDI plan, and note your <b>Customer ID</b>.</li>
+      ${enroll}
+      <li>Set up your Availity claims mailbox, then send batch claims to payer ID <b>${id}</b> like any other payer.</li>`;
+    if (res.route === 'mail') return `
+      <li>Print each month's claims for this payer on the standard <b>CMS-1500</b> claim form.</li>
+      <li>Find the payer's <b>claims mailing address</b> on the back of the patient's insurance card or on the payer's website.</li>
+      <li>Mail one combined package a month through a HIPAA-compliant mail service that will sign a business associate agreement (BAA).</li>
+      <li>Keep a copy of what was sent, and watch for the payer's payment or denial.</li>`;
+    return `
+      <li>Keep sending these claims the way you do today. At your volume, neither Availity's paid plan nor mailing is cheaper yet.</li>
+      <li>Come back to this calculator if your volume grows or your fees change.</li>`;
+  }
+
+  function buildReport(){
+    const out = calc();
+    const today = new Date();
+    const stamp = today.toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
+    const iso = today.toISOString().slice(0,10);
+    const savings = Math.max(0, out.totalCurrent - out.totalOptimized);
+    const totalClaims = out.results.reduce((a,r)=>a + r.vol, 0);
+    const payerCount = out.results.length;
+    const data = {
+      schema: 'claims-routing-plan', version: 1, generated: iso,
+      source: 'AC Medical Billing Services - Claims Routing Calculator',
+      monthly_cost_now: Math.round(out.totalCurrent*100)/100, monthly_cost_optimized: Math.round(out.totalOptimized*100)/100,
+      payers: out.results.map(res => ({
+        name: res.r.name, payer_id: res.r.id, route: res.route, send_by: ROUTE_INFO[res.route].app,
+        monthly_claims: res.vol, enrollment_required: !!res.r.enrollRequired,
+        free_on_availity: !!res.r.freeAvail
+      }))
+    };
+    const badge = res => `<span class="b ${ROUTE_INFO[res.route].cls}">${ROUTE_INFO[res.route].short}</span>`;
+    const tableRows = out.results.map(res => `
+        <tr><td><div class="pn">${escapeHtml(res.r.name)}</div><div class="pi">Payer ID ${escapeHtml(res.r.id)}</div></td>
+        <td class="n">${res.vol}</td><td>${badge(res)}${res.r.enrollRequired ? ' <span class="b enroll">Enrollment needed</span>' : ''}</td>
+        <td class="n">${fmtMoney(res.vol * (parseFloat($('rate-current').value)||0))}</td><td class="n">${fmtMoney(res.optimizedCost)}</td></tr>`).join('');
+    const cards = out.results.map((res, i) => `
+      <div class="card"><div class="ch"><span class="num">${i+1}</span><div><div class="pn">${escapeHtml(res.r.name)}</div>
+        <div class="pi">Payer ID ${escapeHtml(res.r.id)} · ${res.vol} claims a month</div></div>${badge(res)}</div>
+        <ol>${stepsFor(res)}</ol></div>`).join('');
+    const needsElectronic = out.results.some(r => r.route === 'free' || r.route === 'pool');
+    const needsMail = out.results.some(r => r.route === 'mail');
+    const css = `
+      :root{--green:#5E7244;--deep:#4B5C36;--tint:#E8EDE1;--cream:#F6F8F3;--ink:#2B3324;--muted:#5A6350;--line:#D9E0CE;--terra:#B3402A;--gold:#7A4F00;--goldbg:#FFF4D6}
+      *{box-sizing:border-box} body{margin:0;background:var(--cream);color:var(--ink);font-family:Inter,Arimo,Arial,sans-serif;line-height:1.55}
+      .wrap{max-width:860px;margin:0 auto;padding:40px 28px 60px}
+      h1,h2{font-family:'Playfair Display',Georgia,serif;color:var(--green);margin:0}
+      h1{font-size:40px;line-height:1.15} h2{font-size:26px;margin-bottom:6px}
+      .top{border-bottom:3px solid var(--green);padding-bottom:18px;margin-bottom:26px}
+      .by{color:var(--muted);font-size:14px;margin-top:8px}
+      .sum{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:0 0 30px}
+      .stat{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px}
+      .sl{font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)} .sv{font-family:'Playfair Display',Georgia,serif;font-size:30px;margin-top:4px}
+      .sv.g{color:var(--green)} .sv.t{color:var(--terra)} .ss{font-size:13px;color:var(--muted)}
+      section{margin:34px 0} p.lead{color:var(--muted);margin:4px 0 14px}
+      table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:14px}
+      th{background:var(--tint);text-align:left;padding:10px 12px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--deep)} td{padding:11px 12px;border-top:1px solid var(--line);vertical-align:top}
+      .n{text-align:right;white-space:nowrap} .pn{font-weight:700} .pi{font-size:13px;color:var(--muted)}
+      .b{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+      .b.free{background:var(--tint);color:var(--deep)} .b.pool{background:var(--goldbg);color:var(--gold)} .b.mail{background:#FBEAE5;color:var(--terra)} .b.stay{background:#EEF1EA;color:var(--muted)} .b.enroll{background:var(--goldbg);color:var(--gold)}
+      .card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:0 0 14px;break-inside:avoid}
+      .ch{display:flex;gap:14px;align-items:center;margin-bottom:8px} .ch .b{margin-left:auto}
+      .num{width:34px;height:34px;border-radius:50%;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none}
+      ol{margin:8px 0 0 20px;padding:0} li{margin:6px 0}
+      .check{list-style:none;margin:8px 0 0;padding:0} .check li{padding-left:34px;position:relative;margin:10px 0}
+      .check li:before{content:"";position:absolute;left:0;top:3px;width:18px;height:18px;border:2px solid var(--green);border-radius:4px;background:#fff}
+      .cta{background:var(--green);color:#fff;border-radius:16px;padding:28px;margin-top:34px;text-align:center}
+      .cta h2{color:#fff} .cta p{margin:8px auto 18px;max-width:560px;color:#EEF3E6}
+      .cta a{display:inline-block;background:#fff;color:var(--deep);font-weight:700;text-decoration:none;padding:12px 26px;border-radius:999px}
+      .fine{font-size:12.5px;color:var(--muted);margin-top:26px}
+      @media print{body{background:#fff}.wrap{padding:0}.cta a{border:2px solid #fff}} @media(max-width:620px){.sum{grid-template-columns:1fr}}`;
+    const html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<title>Your Claims Routing Plan</title>' +
+      '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Inter:wght@400;600;700&display=swap">' +
+      '<style>' + css + '</style></head><body><div class="wrap">' +
+      '<div class="top"><h1>Your Claims Routing Plan</h1><div class="by">Prepared ' + stamp + ' · AC Medical Billing Services Claims Routing Calculator</div></div>' +
+      '<div class="sum"><div class="stat"><div class="sl">What you pay now</div><div class="sv t">' + fmtMoney(out.totalCurrent) + '</div><div class="ss">a month, ' + totalClaims + ' claims</div></div>' +
+      '<div class="stat"><div class="sl">With this plan</div><div class="sv g">' + fmtMoney(out.totalOptimized) + '</div><div class="ss">a month</div></div>' +
+      '<div class="stat"><div class="sl">You could save</div><div class="sv g">' + fmtMoney(savings) + '</div><div class="ss">a month · ' + fmtMoney(savings*12) + ' a year</div></div></div>' +
+      '<section><h2>Your plan, payer by payer</h2><p class="lead">Each payer you bill, how to send its claims for the lowest cost, and what that costs a month.</p>' +
+      '<table><thead><tr><th>Payer</th><th class="n">Claims / mo</th><th>Send by</th><th class="n">Now</th><th class="n">Plan</th></tr></thead><tbody>' + tableRows + '</tbody></table></section>' +
+      '<section><h2>What to do for each payer</h2><p class="lead">Tick each step as you go.</p>' + cards + '</section>' +
+      '<section><h2>What you will need to get started</h2><p class="lead">Have these ready and claims go out smoothly.</p><ul class="check">' +
+      '<li><b>Your provider details:</b> NPI number, tax ID (EIN or SSN), taxonomy code, and your office address.</li>' +
+      (needsElectronic ? '<li><b>An Availity Essentials account</b> for your practice, your <b>Customer ID</b>, and a claims <b>mailbox</b> (username and password) for batch files.</li>' +
+        '<li><b>The payer IDs</b> listed above for every payer you send electronically (' + out.results.filter(r=>r.route==='free'||r.route==='pool').map(r=>escapeHtml(r.r.id)).join(', ') + ').</li>' : '') +
+      (needsMail ? '<li><b>A HIPAA-compliant mail service</b> that signs a business associate agreement, <b>CMS-1500</b> claim forms, and each mailed payer\'s <b>claims mailing address</b>.</li>' : '') +
+      '<li><b>Each client\'s details:</b> full name, date of birth, sex, address, insurance company, member ID, and who holds the policy.</li>' +
+      '<li><b>For every visit:</b> date of service, billing code (CPT), your fee, place of service, and the client\'s diagnosis code (ICD-10).</li>' +
+      '<li><b>A way to keep track</b> of what has been sent, so no visit is billed twice and none is missed.</li></ul></section>' +
+      '<div class="cta"><h2>Want a system that does this for you?</h2><p>A Windows app that reads your practice software\'s reports, routes each claim the way this plan says, and files it for you is on its way. Everything stays on your computer. Join the waitlist and be first to know, and you will be able to download it here when it is ready.</p>' +
+      '<a href="' + WAITLIST_URL + '">Join the waitlist</a></div>' +
+      '<p class="fine">Based on ' + payerCount + ' payer' + (payerCount===1?'':'s') + ' and the rates you entered. Payer and enrollment information comes from Availity\'s published payer list and can change, so confirm with Availity and each payer before you rely on it. This plan is a cost and routing guide, not billing or legal advice.</p>' +
+      '</div><script type="application/json" id="claims-routing-plan">' + JSON.stringify(data).replace(/</g, '\\u003c') + '<' + '/script></body></html>';
+    return { html, iso };
+  }
+
+  function exportPlan(){
+    if (!rows.length){ alert('Add at least one payer first, then press Export.'); return; }
+    const { html, iso } = buildReport();
+    const blob = new Blob([html], { type: 'text/html' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'claims-routing-plan-' + iso + '.html';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 2000);
+  }
+  $('export-btn').addEventListener('click', exportPlan);
 
   loadState();
   if (rows.length===0){
