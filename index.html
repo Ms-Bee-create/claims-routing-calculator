@@ -635,5 +635,20 @@
   render();
 })();
 </script>
+<script>
+/* tell the page this is embedded in how tall we are, so it can fit the frame snugly */
+(function(){
+  function send(){
+    try{
+      var h=Math.ceil(document.documentElement.getBoundingClientRect().height);
+      parent.postMessage({type:'claims-calculator-height',height:h},'*');
+    }catch(e){}
+  }
+  window.addEventListener('load',send);
+  window.addEventListener('resize',send);
+  if(window.ResizeObserver){ new ResizeObserver(send).observe(document.body); }
+  setInterval(send,1000);
+})();
+</script>
 </body>
 </html>
