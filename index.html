@@ -156,6 +156,7 @@
 
   <h1>Claims Routing Calculator</h1>
   <p class="sub">Most billing platforms don't build their own claims network — they route you through a clearinghouse like Availity and charge you per claim to do it. A lot of that routing is free if you send it yourself. Add the payers you bill, your monthly claim volume, and your current per-claim fee, and this checks each one against Availity's real batch network — <b>free submission</b>, <b>paid EDI plan</b> (worth pooling across payers), or <b>mail</b> — to show what you'd actually save.</p>
+  <p class="sub">This is an honesty check, not a sales pitch: for some payers, especially ones that need Availity's paid EDI plan, your current software may already be the cheapest way to send that claim. If that's true for you, the numbers below will show it plainly — stay where you are for those claims and switch only the ones where it actually saves money.</p>
 
   <div class="summary">
     <div class="stat">
@@ -240,6 +241,7 @@
       <div class="empty" id="empty-state">No payers added yet — search above to get started.</div>
     </div>
     <div class="pool-note" id="pool-note" hidden></div>
+    <div class="pool-note" id="stay-note" hidden></div>
   </div>
 
   <footer>Built for <b>AC Medical Billing</b> · payer data from Availity's published batch network — free vs. paid-EDI status can change; re-check periodically. Mail cost assumes one combined monthly mailing per payer (PostGrid, HIPAA-compliant BAA available, color, single-sided — the cheapest HIPAA-compliant option we found), not one piece per claim.</footer>
@@ -259,6 +261,7 @@
   const rowsBody = $('payer-rows');
   const emptyState = $('empty-state');
   const poolNote = $('pool-note');
+  const stayNote = $('stay-note');
 
   function fmtMoney(n){
     return '$' + n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
@@ -470,6 +473,14 @@
     const savings = out.totalCurrent - out.totalOptimized;
     $('stat-savings').textContent = fmtMoney(Math.max(0,savings));
     $('stat-savings-sub').textContent = fmtMoney(Math.max(0,savings)*12) + '/yr';
+
+    const totalClaimsSoFar = out.results.reduce((a,r)=>a + r.vol, 0);
+    if (totalClaimsSoFar > 0 && savings <= 0.005){
+      stayNote.hidden = false;
+      stayNote.innerHTML = `<div>✅</div><div><b>Your current fee is already the cheapest option here.</b> At ${fmtMoney(parseFloat($('rate-current').value)||0)}/claim and this volume, switching wouldn't save you anything — so stay with your current software for these claims. That's a good outcome, not a problem to fix; come back if your volume, payers, or fee change.</div>`;
+    } else {
+      stayNote.hidden = true;
+    }
 
     if (out.poolVolume>0){
       poolNote.hidden = false;
